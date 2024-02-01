@@ -1,0 +1,15 @@
+[package]
+name = "mimic"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+pnet = "0.34.0"
+tokio = { version = "1.35.1", features = ["macros"] }
+rand = "0.8.5"
+socket2 = "0.5.5"
+ipconfig = "0.3.2"
+hickory-resolver = "0.24.0"
+url = "2.5.0"
