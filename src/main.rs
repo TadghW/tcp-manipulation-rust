@@ -14,7 +14,7 @@ use pnet::packet::tcp::TcpFlags;
 use pnet::datalink;
 use ipconfig::get_adapters;
 use ipconfig::OperStatus;
-use socket2::{Socket, Domain, Type, Protocol};
+use socket2::{Socket, SockAddr, Domain, Type, Protocol};
 use rand::Rng;
 use std::convert::TryInto;
 use url::Url;
@@ -91,6 +91,7 @@ fn syn_request_and_listen(packet: Ipv4Packet, source_ip: Ipv4Addr, source_port: 
     //assemble details
     let source_addr_string: String = format!("{}:{}", source_ip, source_port);
     let socket: Socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::TCP)).expect("Failed to create socket");
+    let socket_raw: Socket = Socket::new_raw(Domain::IPV4, Type::RAW, Some(Protocol::TCP)).expect("Failed to create raw socket");
     let target_ip_string: String = target_ip.to_string();
     let target_addr_string: String = format!("{}:{}", target_ip_string, 443);
     let source: SocketAddr = source_addr_string.parse().expect("Unable to parse source address");
@@ -102,7 +103,10 @@ fn syn_request_and_listen(packet: Ipv4Packet, source_ip: Ipv4Addr, source_port: 
     print_packet_hex(packet.packet());
     
     //send
-    socket.send_to(packet.packet(), &target.into()).expect("Failed to send SYN Request through socket");
+    let packet_as_bytes: &[u8] = &packet.packet();
+    let socket_address: SocketAddr = target.into();
+    let socket_address_os: SockAddr = SockAddr::from(socket_address);
+    socket_raw.send_to(packet_as_bytes, &socket_address_os).expect("Failed to send SYN Request through socket");
     println!("SYN request sent to {:?}", target);
     
     //listen
@@ -197,7 +201,7 @@ fn generate_ip_packet<'a>(source_ip: Ipv4Addr, target_ip: Ipv4Addr, buffer: &'a 
         packet.set_source(source_ip);
         packet.set_destination(target_ip);
         packet.set_flags(Ipv4Flags::DontFragment);
-        packet.set_payload(payload.packet()); //Potentially incorrect
+        packet.set_payload(&payload.packet()); //Potentially incorrect
         packet.set_checksum(pnet::packet::ipv4::checksum(&packet.to_immutable()));
     }
 

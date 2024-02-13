@@ -13,3 +13,4 @@ socket2 = "0.5.5"
 ipconfig = "0.3.2"
 hickory-resolver = "0.24.0"
 url = "2.5.0"
+nix = { version = "0.27.1", features = ["socket"] }
