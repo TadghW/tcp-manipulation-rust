@@ -22,7 +22,7 @@ use std::convert::TryInto;
 use url::Url;
 
 fn main() {
-    let domain = "https://peru.mid.ru/ru/";
+    let domain = "https://google.com";
     let _syn_result: Result<(), Error> = syn_test(domain);
     println!("Execution completed.");
 }
@@ -69,7 +69,6 @@ fn syn_test(domain: &str) -> Result<(), Error>{
     Ok(())
 
 }
-
 
 fn syn_request_and_listen(packet: Ipv4Packet, interface: NetworkInterface, source_ip: Ipv4Addr, source_port: u16, target_ip: Ipv4Addr) -> () {
 
@@ -265,11 +264,12 @@ fn find_active_adapter_ip_windows() -> NetworkInterface {
     .filter(|interface: &(String, String, OperStatus)| (interface.0 == "Ethernet" || interface.0 == "WiFi") && interface.2 == OperStatus::IfOperStatusUp)
     .collect();
 
+    let tunnel = valid_adapters.iter().find(|adapter: &&(String, String, OperStatus)| adapter.0.contains("Tunnel"));
     let ethernet_adapter = valid_adapters.iter().find(|adapter: &&(String, String, OperStatus)| adapter.0 == "Ethernet");
     let wifi_adapter = valid_adapters.iter().find(|adapter: &&(String, String, OperStatus)| adapter.0 == "WiFi");
-    let result = ethernet_adapter.or(wifi_adapter);
+    let result = tunnel.or(ethernet_adapter.or(wifi_adapter));
 
-    println!("Adapter used for attack: {:?}", result.unwrap());
+    println!("Adapter used for transmission: {:?}", result.unwrap());
 
     let interfaces: Vec<datalink::NetworkInterface> = datalink::interfaces();
 
@@ -277,7 +277,7 @@ fn find_active_adapter_ip_windows() -> NetworkInterface {
     .filter(|interface: &NetworkInterface| interface.name.contains(&result.unwrap().1))
     .collect();
 
-    return valid_interfaces.get(0).expect("Attack aborted: No valid network adapter found (Windows mode)").clone();
+    return valid_interfaces.get(0).expect("Transmission aborted: No valid network adapter found (Windows mode)").clone();
 }
 
 fn extract_hostname(url: &str) -> Option<String> {
